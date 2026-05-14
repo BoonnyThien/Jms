@@ -1,28 +1,24 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  // ─── Click-through control ─────────────────────────
+  // ─── Click-through ─────────────────────────────────
   setClickThrough: (ignore) => ipcRenderer.send('set-click-through', ignore),
 
-  // ─── Macro CRUD ────────────────────────────────────
-  getMacros: () => ipcRenderer.invoke('get-macros'),
-  createMacro: (name) => ipcRenderer.invoke('create-macro', name),
-  deleteMacro: (id) => ipcRenderer.invoke('delete-macro', id),
-  renameMacro: (id, name) => ipcRenderer.invoke('rename-macro', id, name),
-  resetMacro: (id) => ipcRenderer.invoke('reset-macro', id),
-
   // ─── Recording ─────────────────────────────────────
-  startRecording: (macroId) => ipcRenderer.invoke('start-recording', macroId),
+  startRecording: () => ipcRenderer.invoke('start-recording'),
   stopRecording: () => ipcRenderer.invoke('stop-recording'),
   recordClick: (sx, sy) => ipcRenderer.invoke('record-click', sx, sy),
 
-  // ─── Playback ──────────────────────────────────────
-  startPlayback: (macroId) => ipcRenderer.invoke('start-playback', macroId),
+  // ─── Execution ─────────────────────────────────────
+  executeSequence: (steps) => ipcRenderer.invoke('execute-sequence', steps),
   stopPlayback: () => ipcRenderer.invoke('stop-playback'),
 
-  // ─── Events from Main → Renderer ──────────────────
+  // ─── Save / Load ──────────────────────────────────
+  saveMacro: (steps) => ipcRenderer.invoke('save-macro', steps),
+  loadMacro: () => ipcRenderer.invoke('load-macro'),
+
+  // ─── Events from Main ─────────────────────────────
   onStepRecorded: (cb) => ipcRenderer.on('step-recorded', (_, d) => cb(d)),
   onPlaybackStep: (cb) => ipcRenderer.on('playback-step', (_, d) => cb(d)),
-  onPlaybackDone: (cb) => ipcRenderer.on('playback-done', (_, d) => cb(d)),
-  onMacrosUpdated: (cb) => ipcRenderer.on('macros-updated', (_, d) => cb(d)),
+  onPlaybackDone: (cb) => ipcRenderer.on('playback-done', () => cb()),
 });

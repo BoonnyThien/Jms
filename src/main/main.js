@@ -1,5 +1,6 @@
-const { app, BrowserWindow, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, dialog } = require('electron');
 const path = require('path');
+const fs = require('fs');
 
 // ─── Windows API for OS-level mouse clicks ───────────────
 let osClick;
@@ -38,17 +39,10 @@ try {
 
 // ─── State ───────────────────────────────────────────────
 let mainWindow = null;
-let macros = [{ id: 'macro-1', name: 'Macro 1', steps: [] }];
-let activeMacroId = null;
 let isRecording = false;
-let lastClickTime = null;
 let isPlaying = false;
-
 const isDev = !app.isPackaged;
 
-function genId() {
-  return 'macro-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
-}
 function delay(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
@@ -56,9 +50,6 @@ function send(channel, ...args) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, ...args);
   }
-}
-function macroList() {
-  return macros.map(m => ({ id: m.id, name: m.name, stepCount: m.steps.length }));
 }
 
 // ─── Window ──────────────────────────────────────────────
@@ -84,7 +75,6 @@ function createWindow() {
     },
   });
 
-  // Default: click-through (user can interact with apps below)
   mainWindow.setIgnoreMouseEvents(true, { forward: true });
 
   if (isDev) {
@@ -107,108 +97,98 @@ ipcMain.on('set-click-through', (event, ignore) => {
   }
 });
 
-// ─── IPC: Macro CRUD ─────────────────────────────────────
-ipcMain.handle('get-macros', () => macroList());
-
-ipcMain.handle('create-macro', (e, name) => {
-  const m = { id: genId(), name: name || `Macro ${macros.length + 1}`, steps: [] };
-  macros.push(m);
-  send('macros-updated', macroList());
-  return m.id;
-});
-
-ipcMain.handle('delete-macro', (e, id) => {
-  macros = macros.filter(m => m.id !== id);
-  if (activeMacroId === id) { activeMacroId = null; isRecording = false; }
-  send('macros-updated', macroList());
-});
-
-ipcMain.handle('rename-macro', (e, id, name) => {
-  const m = macros.find(m => m.id === id);
-  if (m) m.name = name;
-  send('macros-updated', macroList());
-});
-
-ipcMain.handle('reset-macro', (e, id) => {
-  const m = macros.find(m => m.id === id);
-  if (m) m.steps = [];
-  send('macros-updated', macroList());
-});
-
 // ─── IPC: Recording ──────────────────────────────────────
-ipcMain.handle('start-recording', (e, macroId) => {
-  const m = macros.find(m => m.id === macroId);
-  if (!m) return false;
-  activeMacroId = macroId;
+ipcMain.handle('start-recording', () => {
   isRecording = true;
-  lastClickTime = Date.now();
-  m.steps = [];
-  // Make overlay capture clicks (NOT click-through)
   if (mainWindow) mainWindow.setIgnoreMouseEvents(false);
-  send('macros-updated', macroList());
   return true;
 });
 
 ipcMain.handle('stop-recording', () => {
   isRecording = false;
-  activeMacroId = null;
-  lastClickTime = null;
-  // Restore click-through
   if (mainWindow) mainWindow.setIgnoreMouseEvents(true, { forward: true });
   return true;
 });
 
 ipcMain.handle('record-click', async (e, screenX, screenY) => {
-  if (!isRecording || !activeMacroId) return null;
-  const m = macros.find(m => m.id === activeMacroId);
-  if (!m) return null;
+  if (!isRecording) return null;
 
-  const now = Date.now();
-  const d = lastClickTime ? Math.max(now - lastClickTime, 100) : 1000;
-  lastClickTime = now;
+  const step = { step: 0, x: Math.round(screenX), y: Math.round(screenY), delay: 500 };
 
-  const step = { step: m.steps.length + 1, x: Math.round(screenX), y: Math.round(screenY), delay: d };
-  m.steps.push(step);
-
-  // Forward click to OS: temporarily go click-through, send click, restore
+  // Forward click to OS: temporarily click-through, send click, restore
   if (mainWindow) mainWindow.setIgnoreMouseEvents(true);
   await delay(30);
   osClick(step.x, step.y);
   await delay(50);
   if (isRecording && mainWindow) mainWindow.setIgnoreMouseEvents(false);
 
-  send('step-recorded', { macroId: activeMacroId, stepCount: m.steps.length, step });
-  send('macros-updated', macroList());
   return step;
 });
 
-// ─── IPC: Playback ───────────────────────────────────────
-ipcMain.handle('start-playback', async (e, macroId) => {
-  const m = macros.find(m => m.id === macroId);
-  if (!m || m.steps.length === 0 || isPlaying) return false;
+// ─── IPC: Execute Sequence ───────────────────────────────
+// Vue sends the FULL customized step array; Main executes it exactly.
+ipcMain.handle('execute-sequence', async (e, sequence) => {
+  if (!Array.isArray(sequence) || sequence.length === 0 || isPlaying) return false;
   isPlaying = true;
 
   // Click-through during playback
   if (mainWindow) mainWindow.setIgnoreMouseEvents(true, { forward: true });
 
-  for (let i = 0; i < m.steps.length; i++) {
+  for (let i = 0; i < sequence.length; i++) {
     if (!isPlaying) break;
-    const s = m.steps[i];
-    send('playback-step', { macroId, current: i + 1, total: m.steps.length });
-    if (i > 0) await delay(s.delay);
+    const s = sequence[i];
+
+    send('playback-step', { current: i + 1, total: sequence.length });
+
+    // Wait the exact delay specified by the user
+    if (i > 0) {
+      await delay(s.delay);
+    }
     if (!isPlaying) break;
+
     osClick(s.x, s.y);
   }
 
   isPlaying = false;
   if (mainWindow) mainWindow.setIgnoreMouseEvents(true, { forward: true });
-  send('playback-done', { macroId });
+  send('playback-done');
   return true;
 });
 
 ipcMain.handle('stop-playback', () => {
   isPlaying = false;
   return true;
+});
+
+// ─── IPC: Save / Load Macro ──────────────────────────────
+ipcMain.handle('save-macro', async (e, steps) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Lưu Macro',
+    defaultPath: 'macro.json',
+    filters: [{ name: 'JSON Files', extensions: ['json'] }],
+  });
+  if (result.canceled || !result.filePath) return null;
+
+  fs.writeFileSync(result.filePath, JSON.stringify(steps, null, 2), 'utf-8');
+  return result.filePath;
+});
+
+ipcMain.handle('load-macro', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Tải Macro',
+    filters: [{ name: 'JSON Files', extensions: ['json'] }],
+    properties: ['openFile'],
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+
+  try {
+    const data = fs.readFileSync(result.filePaths[0], 'utf-8');
+    const parsed = JSON.parse(data);
+    if (Array.isArray(parsed)) return parsed;
+    return null;
+  } catch {
+    return null;
+  }
 });
 
 // ─── App Lifecycle ───────────────────────────────────────

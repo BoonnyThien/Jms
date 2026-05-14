@@ -52,28 +52,80 @@ html, body, #app {
 
 /* ─── Glassmorphism Card ──────────────────────────────── */
 .glass-card {
-  background: rgba(15, 15, 25, 0.85);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(12, 12, 20, 0.88);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   box-shadow:
-    0 8px 32px rgba(0, 0, 0, 0.5),
-    0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+    0 8px 32px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+}
+
+/* ─── Step Input Fields ──────────────────────────────── */
+.step-input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 11px;
+  font-family: 'Inter', monospace;
+  font-variant-numeric: tabular-nums;
+  padding: 3px 6px;
+  text-align: center;
+  outline: none;
+  transition: all 0.15s ease;
+  -moz-appearance: textfield;
+}
+
+.step-input::-webkit-inner-spin-button,
+.step-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.step-input:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.step-input:focus:not(:disabled) {
+  border-color: rgba(99, 102, 241, 0.5);
+  background: rgba(99, 102, 241, 0.08);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+.step-input:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ─── Control Buttons ─────────────────────────────────── */
+.ctrl-btn {
+  backdrop-filter: blur(8px);
+  transition: all 0.15s ease;
+}
+
+.ctrl-btn:active:not(:disabled) {
+  transform: scale(0.96);
 }
 
 /* ─── Scrollbar ───────────────────────────────────────── */
-.macro-list::-webkit-scrollbar {
+.step-list::-webkit-scrollbar {
   width: 4px;
 }
-.macro-list::-webkit-scrollbar-track {
+.step-list::-webkit-scrollbar-track {
   background: transparent;
 }
-.macro-list::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
+.step-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
   border-radius: 2px;
 }
+.step-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
 
-/* ─── Smooth Transitions ──────────────────────────────── */
+/* ─── Transitions ─────────────────────────────────────── */
 .fade-enter-active, .fade-leave-active {
   transition: opacity 0.2s ease;
 }
@@ -87,4 +139,19 @@ html, body, #app {
 .slide-enter-from, .slide-leave-to {
   opacity: 0;
   transform: translateY(-8px);
+}
+
+.list-enter-active {
+  transition: all 0.2s ease;
+}
+.list-leave-active {
+  transition: all 0.15s ease;
+}
+.list-enter-from {
+  opacity: 0;
+  transform: translateX(-12px);
+}
+.list-leave-to {
+  opacity: 0;
+  transform: translateX(12px);
 }

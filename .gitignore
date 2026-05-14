@@ -5,3 +5,8 @@ out/
 *.log
 .vscode/
 *.exe
+__pycache__/
+*.pyc
+.venv/
+venv/
+config.json

@@ -1,520 +1,549 @@
 """
-Coordinate Auto-Clicker — Native Python Desktop App
-────────────────────────────────────────────────────
-Tech: customtkinter · pyautogui · pynput · threading
-Two UI modes: Main Dashboard (setup) ↔ Mini Widget (execute)
+Multi-Project Automation Hub
+─────────────────────────────
+customtkinter · pyautogui · pynput · threading
+Multiple projects, each with its own FAB and click sequence.
+Auto-saves to projects.json.
 """
 
-import json
-import os
-import threading
-import time
-import tkinter as tk
-from tkinter import filedialog, messagebox
-
+import json, os, threading, time, tkinter as tk
+from tkinter import messagebox
 import customtkinter as ctk
 import pyautogui
+from pynput import mouse as pmouse
 
-from pynput import mouse as pynput_mouse
-
-# ─── Globals ──────────────────────────────────────────────
-pyautogui.FAILSAFE = True  # Move mouse to top-left corner to abort
+pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.02
 
-APP_TITLE = "Auto-Clicker"
-DEFAULT_DELAY = 500  # ms
-CONFIG_FILE = "config.json"
+DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects.json")
+DEFAULT_DELAY = 500
 
 # ─── Colors ───────────────────────────────────────────────
-C_BG = "#0d0d14"
-C_BG2 = "#13131f"
-C_SURFACE = "#1a1a2e"
-C_BORDER = "#2a2a3e"
-C_TEXT = "#e2e2f0"
-C_TEXT_DIM = "#6b6b80"
-C_ACCENT = "#6366f1"
-C_REC = "#f43f5e"
-C_PLAY = "#10b981"
-C_WARN = "#f59e0b"
-C_DEL = "#ef4444"
+BG      = "#0c0c14"
+BG2     = "#12121e"
+SURF    = "#1a1a2e"
+SURF2   = "#22223a"
+BRD     = "#2a2a3e"
+TXT     = "#e2e2f0"
+DIM     = "#6b6b80"
+ACC     = "#6366f1"
+ACC2    = "#4f46e5"
+GREEN   = "#10b981"
+GREEN2  = "#059669"
+RED     = "#f43f5e"
+RED2    = "#e11d48"
+AMBER   = "#f59e0b"
+AMBER2  = "#d97706"
+
+# ─── Data helpers ─────────────────────────────────────────
+def load_data() -> list[dict]:
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+def save_data(projects: list[dict]):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(projects, f, indent=2, ensure_ascii=False)
+
+def new_id():
+    import random, string
+    return "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
 
 
 # ═══════════════════════════════════════════════════════════
-#  STEP ROW WIDGET
+#  FAB — Floating Action Button (one per project)
 # ═══════════════════════════════════════════════════════════
-class StepRow(ctk.CTkFrame):
-    """One row in the macro table: # | X | Y | Delay | [Delete]"""
+class ProjectFAB(ctk.CTkToplevel):
+    def __init__(self, master, project: dict, on_pos_changed=None):
+        super().__init__(master)
+        self.project = project
+        self.on_pos_changed = on_pos_changed
+        self._stop = threading.Event()
+        self._playing = False
+        self._dx = self._dy = 0
 
-    def __init__(self, master, index: int, x: int = 0, y: int = 0,
-                 delay: int = DEFAULT_DELAY, on_delete=None):
-        super().__init__(master, fg_color="transparent", height=36)
-        self.on_delete = on_delete
-        self.pack(fill="x", padx=4, pady=1)
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.configure(fg_color=BG)
 
-        # Step Number
-        self.lbl_num = ctk.CTkLabel(self, text=str(index), width=36,
-                                     font=("Consolas", 12), text_color=C_TEXT_DIM)
-        self.lbl_num.pack(side="left", padx=(4, 2))
+        fx = project.get("fab_x", 100)
+        fy = project.get("fab_y", 100)
+        self.geometry(f"180x44+{fx}+{fy}")
 
-        # X
-        self.entry_x = ctk.CTkEntry(self, width=72, font=("Consolas", 12),
-                                     placeholder_text="X", justify="center",
-                                     fg_color=C_BG2, border_color=C_BORDER,
-                                     text_color=C_TEXT)
-        self.entry_x.pack(side="left", padx=2)
-        self.entry_x.insert(0, str(x))
+        self._build()
+        self.protocol("WM_DELETE_WINDOW", self.close_fab)
 
-        # Y
-        self.entry_y = ctk.CTkEntry(self, width=72, font=("Consolas", 12),
-                                     placeholder_text="Y", justify="center",
-                                     fg_color=C_BG2, border_color=C_BORDER,
-                                     text_color=C_TEXT)
-        self.entry_y.pack(side="left", padx=2)
-        self.entry_y.insert(0, str(y))
+    def _build(self):
+        f = ctk.CTkFrame(self, fg_color=SURF, corner_radius=10,
+                         border_width=1, border_color=BRD)
+        f.pack(fill="both", expand=True, padx=1, pady=1)
 
-        # Delay
-        self.entry_delay = ctk.CTkEntry(self, width=80, font=("Consolas", 12),
-                                         placeholder_text="ms", justify="center",
-                                         fg_color=C_BG2, border_color=C_BORDER,
-                                         text_color=C_TEXT)
-        self.entry_delay.pack(side="left", padx=2)
-        self.entry_delay.insert(0, str(delay))
+        # Drag handle
+        drag = ctk.CTkLabel(f, text="⠿", width=18, font=("Segoe UI", 13),
+                            text_color=DIM, cursor="fleur")
+        drag.pack(side="left", padx=(5, 2))
+        drag.bind("<Button-1>", self._drag_start)
+        drag.bind("<B1-Motion>", self._drag_move)
 
-        # Delete button
-        self.btn_del = ctk.CTkButton(self, text="✕", width=30, height=28,
-                                      font=("Segoe UI", 12),
-                                      fg_color="transparent", text_color=C_TEXT_DIM,
-                                      hover_color="#3a1525",
-                                      command=self._on_delete)
-        self.btn_del.pack(side="left", padx=(4, 4))
+        # Name label
+        name = self.project.get("name", "?")[:10]
+        ctk.CTkLabel(f, text=name, font=("Segoe UI", 10, "bold"),
+                     text_color=TXT, width=60).pack(side="left", padx=2)
 
-    def _on_delete(self):
-        if self.on_delete:
-            self.on_delete(self)
+        # Play button
+        self.btn = ctk.CTkButton(f, text="▶", width=36, height=30,
+                                  font=("Segoe UI", 13, "bold"),
+                                  fg_color=GREEN, hover_color=GREEN2,
+                                  command=self._toggle)
+        self.btn.pack(side="left", padx=2)
 
-    def set_index(self, idx: int):
-        self.lbl_num.configure(text=str(idx))
+        # Close
+        ctk.CTkButton(f, text="✕", width=26, height=26,
+                       font=("Segoe UI", 11), fg_color="transparent",
+                       hover_color="#3a1525", text_color=DIM,
+                       command=self.close_fab).pack(side="right", padx=(0, 4))
 
-    def get_data(self) -> dict:
-        try:
-            x = int(self.entry_x.get())
-        except ValueError:
-            x = 0
-        try:
-            y = int(self.entry_y.get())
-        except ValueError:
-            y = 0
-        try:
-            delay = int(self.entry_delay.get())
-        except ValueError:
-            delay = DEFAULT_DELAY
-        return {"x": x, "y": y, "delay": max(delay, 10)}
+    def _drag_start(self, e):
+        self._dx, self._dy = e.x, e.y
 
-    def highlight(self, active: bool):
-        """Highlight row during playback."""
-        if active:
-            self.configure(fg_color="#0f2a1f")
+    def _drag_move(self, e):
+        x = self.winfo_x() + e.x - self._dx
+        y = self.winfo_y() + e.y - self._dy
+        self.geometry(f"+{x}+{y}")
+        self.project["fab_x"] = x
+        self.project["fab_y"] = y
+        if self.on_pos_changed:
+            self.on_pos_changed()
+
+    def _toggle(self):
+        if self._playing:
+            self._stop.set()
         else:
-            self.configure(fg_color="transparent")
+            self._play()
 
-
-# ═══════════════════════════════════════════════════════════
-#  MAIN DASHBOARD
-# ═══════════════════════════════════════════════════════════
-class MainDashboard(ctk.CTk):
-    """The large setup/config window."""
-
-    def __init__(self):
-        super().__init__()
-        self.title(f"⚡ {APP_TITLE} — Bảng Điều Khiển")
-        self.geometry("520x620")
-        self.minsize(460, 500)
-        self.configure(fg_color=C_BG)
-
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
-
-        self.step_rows: list[StepRow] = []
-        self.is_recording = False
-        self.is_playing = False
-        self._listener = None
-        self._play_thread = None
-        self._stop_flag = threading.Event()
-        self.mini_widget = None
-
-        self._build_ui()
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-
-    # ─── Build UI ─────────────────────────────────────────
-    def _build_ui(self):
-        # ── Header ──
-        header = ctk.CTkFrame(self, fg_color=C_SURFACE, corner_radius=0, height=48)
-        header.pack(fill="x")
-        header.pack_propagate(False)
-
-        ctk.CTkLabel(header, text=f"⚡ {APP_TITLE}",
-                     font=("Segoe UI", 16, "bold"), text_color=C_TEXT
-                     ).pack(side="left", padx=16)
-
-        self.lbl_status = ctk.CTkLabel(header, text="Sẵn sàng",
-                                        font=("Segoe UI", 11),
-                                        text_color=C_TEXT_DIM)
-        self.lbl_status.pack(side="right", padx=16)
-
-        # ── Controls ──
-        ctrl_frame = ctk.CTkFrame(self, fg_color=C_BG, corner_radius=0)
-        ctrl_frame.pack(fill="x", padx=12, pady=(10, 4))
-
-        self.btn_record = ctk.CTkButton(
-            ctrl_frame, text="🎯 Ghi Tọa Độ", width=120, height=34,
-            font=("Segoe UI", 12, "bold"),
-            fg_color=C_REC, hover_color="#e11d48",
-            command=self._toggle_record)
-        self.btn_record.pack(side="left", padx=(0, 6))
-
-        ctk.CTkButton(
-            ctrl_frame, text="＋ Thêm Bước", width=100, height=34,
-            font=("Segoe UI", 12),
-            fg_color=C_SURFACE, hover_color=C_BORDER, text_color=C_TEXT,
-            command=lambda: self._add_step(0, 0, DEFAULT_DELAY)
-        ).pack(side="left", padx=(0, 6))
-
-        ctk.CTkButton(
-            ctrl_frame, text="🗑 Xóa Tất Cả", width=100, height=34,
-            font=("Segoe UI", 12),
-            fg_color=C_SURFACE, hover_color="#3a1525", text_color=C_DEL,
-            command=self._clear_all
-        ).pack(side="left")
-
-        # ── Save / Load / Mini ──
-        ctrl_frame2 = ctk.CTkFrame(self, fg_color=C_BG, corner_radius=0)
-        ctrl_frame2.pack(fill="x", padx=12, pady=(4, 8))
-
-        ctk.CTkButton(
-            ctrl_frame2, text="💾 Lưu", width=80, height=34,
-            font=("Segoe UI", 12),
-            fg_color=C_SURFACE, hover_color=C_BORDER, text_color=C_TEXT,
-            command=self._save_config
-        ).pack(side="left", padx=(0, 6))
-
-        ctk.CTkButton(
-            ctrl_frame2, text="📂 Tải", width=80, height=34,
-            font=("Segoe UI", 12),
-            fg_color=C_SURFACE, hover_color=C_BORDER, text_color=C_TEXT,
-            command=self._load_config
-        ).pack(side="left", padx=(0, 6))
-
-        ctk.CTkButton(
-            ctrl_frame2, text="🚀 Mini Widget", width=120, height=34,
-            font=("Segoe UI", 12, "bold"),
-            fg_color=C_ACCENT, hover_color="#4f46e5", text_color="#fff",
-            command=self._show_mini_widget
-        ).pack(side="right")
-
-        # ── Table Header ──
-        tbl_header = ctk.CTkFrame(self, fg_color=C_SURFACE, corner_radius=6, height=32)
-        tbl_header.pack(fill="x", padx=12, pady=(4, 0))
-        tbl_header.pack_propagate(False)
-
-        cols = [("#", 36), ("X", 72), ("Y", 72), ("Delay (ms)", 80), ("", 30)]
-        for text, w in cols:
-            ctk.CTkLabel(tbl_header, text=text, width=w,
-                         font=("Segoe UI", 10, "bold"),
-                         text_color=C_TEXT_DIM
-                         ).pack(side="left", padx=2 if text else 4)
-
-        # ── Step List (Scrollable) ──
-        self.scroll_frame = ctk.CTkScrollableFrame(
-            self, fg_color=C_BG2, corner_radius=6,
-            scrollbar_button_color=C_BORDER,
-            scrollbar_button_hover_color=C_ACCENT)
-        self.scroll_frame.pack(fill="both", expand=True, padx=12, pady=(2, 8))
-
-        # ── Footer ──
-        footer = ctk.CTkFrame(self, fg_color=C_SURFACE, corner_radius=0, height=32)
-        footer.pack(fill="x", side="bottom")
-        footer.pack_propagate(False)
-
-        self.lbl_count = ctk.CTkLabel(footer, text="0 bước",
-                                       font=("Consolas", 11),
-                                       text_color=C_TEXT_DIM)
-        self.lbl_count.pack(side="left", padx=16)
-
-        ctk.CTkLabel(footer, text="pyautogui • pynput",
-                     font=("Consolas", 10), text_color="#3a3a4e"
-                     ).pack(side="right", padx=16)
-
-    # ─── Step Management ──────────────────────────────────
-    def _add_step(self, x: int, y: int, delay: int):
-        idx = len(self.step_rows) + 1
-        row = StepRow(self.scroll_frame, index=idx, x=x, y=y, delay=delay,
-                      on_delete=self._remove_step)
-        self.step_rows.append(row)
-        self._update_count()
-
-    def _remove_step(self, row: StepRow):
-        if row in self.step_rows:
-            self.step_rows.remove(row)
-            row.destroy()
-            self._reindex()
-            self._update_count()
-
-    def _clear_all(self):
-        for row in self.step_rows:
-            row.destroy()
-        self.step_rows.clear()
-        self._update_count()
-
-    def _reindex(self):
-        for i, row in enumerate(self.step_rows):
-            row.set_index(i + 1)
-
-    def _update_count(self):
-        self.lbl_count.configure(text=f"{len(self.step_rows)} bước")
-
-    def _get_all_steps(self) -> list[dict]:
-        return [row.get_data() for row in self.step_rows]
-
-    # ─── Recording (pynput) ───────────────────────────────
-    def _toggle_record(self):
-        if self.is_recording:
-            self._stop_record()
-        else:
-            self._start_record()
-
-    def _start_record(self):
-        self.is_recording = True
-        self.btn_record.configure(text="⏹ Dừng Ghi", fg_color="#9f1239")
-        self.lbl_status.configure(text="🔴 Đang ghi — Click vào bất kỳ đâu...",
-                                   text_color=C_REC)
-
-        # Minimize so user can click on target app
-        self.iconify()
-
-        def on_click(x, y, button, pressed):
-            if pressed and button == pynput_mouse.Button.left:
-                # Schedule UI update on the main thread
-                self.after(0, lambda: self._add_step(int(x), int(y), DEFAULT_DELAY))
-                # Stop after one click; user clicks Record again for more
-                self.after(100, self._stop_record)
-                self.after(150, self.deiconify)
-                return False  # Stop listener
-
-        self._listener = pynput_mouse.Listener(on_click=on_click)
-        self._listener.start()
-
-    def _stop_record(self):
-        self.is_recording = False
-        if self._listener:
-            self._listener.stop()
-            self._listener = None
-        self.btn_record.configure(text="🎯 Ghi Tọa Độ", fg_color=C_REC)
-        self.lbl_status.configure(text="Sẵn sàng", text_color=C_TEXT_DIM)
-
-    # ─── Save / Load ─────────────────────────────────────
-    def _save_config(self):
-        steps = self._get_all_steps()
+    def _play(self):
+        steps = self.project.get("steps", [])
         if not steps:
-            messagebox.showwarning("Cảnh báo", "Chưa có bước nào để lưu.")
             return
+        self._playing = True
+        self._stop.clear()
+        self.btn.configure(text="⏹", fg_color=AMBER, hover_color=AMBER2)
+        threading.Thread(target=self._exec, daemon=True).start()
 
-        filepath = filedialog.asksaveasfilename(
-            title="Lưu Macro",
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json")],
-            initialfile="config.json")
-        if not filepath:
-            return
+    def _exec(self):
+        for s in self.project.get("steps", []):
+            if self._stop.is_set():
+                break
+            pyautogui.click(x=s["x"], y=s["y"])
+            if self._stop.wait(timeout=s.get("delay", DEFAULT_DELAY) / 1000.0):
+                break
+        self.after(0, self._done)
 
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(steps, f, indent=2, ensure_ascii=False)
+    def _done(self):
+        self._playing = False
+        self.btn.configure(text="▶", fg_color=GREEN, hover_color=GREEN2)
 
-        self.lbl_status.configure(text=f"💾 Đã lưu: {os.path.basename(filepath)}",
-                                   text_color=C_PLAY)
-
-    def _load_config(self):
-        filepath = filedialog.askopenfilename(
-            title="Tải Macro",
-            filetypes=[("JSON files", "*.json")])
-        if not filepath:
-            return
-
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
-            messagebox.showerror("Lỗi", f"Không thể đọc file:\n{e}")
-            return
-
-        if not isinstance(data, list):
-            messagebox.showerror("Lỗi", "File JSON không đúng định dạng.")
-            return
-
-        self._clear_all()
-        for step in data:
-            self._add_step(
-                step.get("x", 0),
-                step.get("y", 0),
-                step.get("delay", DEFAULT_DELAY))
-
-        self.lbl_status.configure(
-            text=f"📂 Đã tải {len(data)} bước từ {os.path.basename(filepath)}",
-            text_color=C_ACCENT)
-
-    # ─── Mini Widget ──────────────────────────────────────
-    def _show_mini_widget(self):
-        steps = self._get_all_steps()
-        self.withdraw()  # Hide dashboard
-        if self.mini_widget and self.mini_widget.winfo_exists():
-            self.mini_widget.destroy()
-        self.mini_widget = MiniWidget(self, steps)
-
-    def show_dashboard(self):
-        """Called by MiniWidget to return to dashboard."""
-        if self.mini_widget and self.mini_widget.winfo_exists():
-            self.mini_widget.destroy()
-            self.mini_widget = None
-        self.deiconify()
-
-    def _on_close(self):
-        if self._listener:
-            self._listener.stop()
+    def close_fab(self):
+        if self._playing:
+            self._stop.set()
         self.destroy()
 
 
 # ═══════════════════════════════════════════════════════════
-#  MINI FLOATING WIDGET
+#  STEP EDITOR — edits one project's steps
 # ═══════════════════════════════════════════════════════════
-class MiniWidget(ctk.CTkToplevel):
-    """Tiny always-on-top execution trigger."""
+class StepEditor(ctk.CTkToplevel):
+    def __init__(self, master, project: dict, on_save=None):
+        super().__init__(master)
+        self.project = project
+        self.on_save = on_save
+        self._listener = None
+        self.rows: list[dict] = []  # {frame, ex, ey, ed}
 
-    def __init__(self, dashboard: MainDashboard, steps: list[dict]):
-        super().__init__()
-        self.dashboard = dashboard
-        self.steps = steps
-        self._stop_flag = threading.Event()
-        self._play_thread = None
-        self.is_playing = False
-
-        # ── Window config ──
-        self.title("")
-        self.overrideredirect(True)
+        self.title(f"📝 Chỉnh sửa: {project.get('name', '?')}")
+        self.geometry("480x500")
+        self.configure(fg_color=BG)
         self.attributes("-topmost", True)
-        self.configure(fg_color=C_BG)
-        self.geometry("220x52")
 
-        # Position: top-right corner
-        screen_w = self.winfo_screenwidth()
-        self.geometry(f"+{screen_w - 240}+20")
+        self._build()
+        self._load_steps()
+        self.protocol("WM_DELETE_WINDOW", self._close)
 
-        # ── Dragging ──
-        self._drag_x = 0
-        self._drag_y = 0
+    def _build(self):
+        # Header
+        hdr = ctk.CTkFrame(self, fg_color=SURF, corner_radius=0, height=44)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        ctk.CTkLabel(hdr, text=f"📝 {self.project.get('name', '')}",
+                     font=("Segoe UI", 14, "bold"), text_color=TXT
+                     ).pack(side="left", padx=12)
 
-        # ── Build UI ──
-        self._build_ui()
+        # Controls
+        ctrl = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+        ctrl.pack(fill="x", padx=10, pady=(8, 4))
 
-    def _build_ui(self):
-        # Main frame with border
-        frame = ctk.CTkFrame(self, fg_color=C_SURFACE, corner_radius=10,
-                             border_width=1, border_color=C_BORDER)
-        frame.pack(fill="both", expand=True, padx=2, pady=2)
+        self.btn_rec = ctk.CTkButton(ctrl, text="🎯 Ghi", width=80, height=32,
+                                      font=("Segoe UI", 11, "bold"),
+                                      fg_color=RED, hover_color=RED2,
+                                      command=self._toggle_rec)
+        self.btn_rec.pack(side="left", padx=(0, 4))
 
-        # Drag handle
-        drag_bar = ctk.CTkLabel(frame, text="⠿", width=20,
-                                 font=("Segoe UI", 14), text_color=C_TEXT_DIM,
-                                 cursor="fleur")
-        drag_bar.pack(side="left", padx=(6, 2))
-        drag_bar.bind("<Button-1>", self._start_drag)
-        drag_bar.bind("<B1-Motion>", self._do_drag)
+        ctk.CTkButton(ctrl, text="＋ Thêm", width=70, height=32,
+                       font=("Segoe UI", 11), fg_color=SURF, hover_color=BRD,
+                       text_color=TXT, command=lambda: self._add_row(0, 0, DEFAULT_DELAY)
+                       ).pack(side="left", padx=(0, 4))
 
-        # Play button
-        self.btn_play = ctk.CTkButton(
-            frame, text="▶ Phát", width=70, height=32,
-            font=("Segoe UI", 12, "bold"),
-            fg_color=C_PLAY, hover_color="#059669",
-            command=self._toggle_play)
-        self.btn_play.pack(side="left", padx=4)
+        ctk.CTkButton(ctrl, text="🗑 Xóa hết", width=80, height=32,
+                       font=("Segoe UI", 11), fg_color=SURF, hover_color="#3a1525",
+                       text_color=RED, command=self._clear
+                       ).pack(side="left")
 
-        # Step counter
-        self.lbl_info = ctk.CTkLabel(
-            frame, text=f"{len(self.steps)} bước",
-            font=("Consolas", 10), text_color=C_TEXT_DIM, width=50)
-        self.lbl_info.pack(side="left", padx=2)
+        ctk.CTkButton(ctrl, text="💾 Lưu", width=70, height=32,
+                       font=("Segoe UI", 11, "bold"), fg_color=ACC, hover_color=ACC2,
+                       command=self._save
+                       ).pack(side="right")
 
-        # Setup button
-        ctk.CTkButton(
-            frame, text="⚙", width=32, height=32,
-            font=("Segoe UI", 14),
-            fg_color="transparent", hover_color=C_BORDER, text_color=C_TEXT_DIM,
-            command=self._back_to_dashboard
-        ).pack(side="right", padx=(0, 6))
+        # Table header
+        th = ctk.CTkFrame(self, fg_color=SURF2, corner_radius=4, height=28)
+        th.pack(fill="x", padx=10, pady=(4, 0))
+        th.pack_propagate(False)
+        for txt, w in [("#", 34), ("X", 80), ("Y", 80), ("Delay ms", 90), ("", 28)]:
+            ctk.CTkLabel(th, text=txt, width=w, font=("Segoe UI", 9, "bold"),
+                         text_color=DIM).pack(side="left", padx=2)
 
-    # ─── Dragging ─────────────────────────────────────────
-    def _start_drag(self, event):
-        self._drag_x = event.x
-        self._drag_y = event.y
+        # Scrollable list
+        self.sframe = ctk.CTkScrollableFrame(self, fg_color=BG2, corner_radius=4,
+                                              scrollbar_button_color=BRD)
+        self.sframe.pack(fill="both", expand=True, padx=10, pady=(2, 8))
 
-    def _do_drag(self, event):
-        x = self.winfo_x() + event.x - self._drag_x
-        y = self.winfo_y() + event.y - self._drag_y
-        self.geometry(f"+{x}+{y}")
+        # Status
+        self.lbl_st = ctk.CTkLabel(self, text="", font=("Segoe UI", 10), text_color=DIM)
+        self.lbl_st.pack(pady=(0, 6))
 
-    # ─── Playback ─────────────────────────────────────────
-    def _toggle_play(self):
-        if self.is_playing:
-            self._stop_play()
-        else:
-            self._start_play()
+    def _load_steps(self):
+        for s in self.project.get("steps", []):
+            self._add_row(s["x"], s["y"], s.get("delay", DEFAULT_DELAY))
 
-    def _start_play(self):
-        if not self.steps:
+    def _add_row(self, x, y, delay):
+        idx = len(self.rows) + 1
+        f = ctk.CTkFrame(self.sframe, fg_color="transparent", height=34)
+        f.pack(fill="x", pady=1)
+
+        lbl = ctk.CTkLabel(f, text=str(idx), width=34, font=("Consolas", 11), text_color=DIM)
+        lbl.pack(side="left", padx=2)
+
+        ex = ctk.CTkEntry(f, width=80, font=("Consolas", 11), justify="center",
+                           fg_color=BG, border_color=BRD, text_color=TXT)
+        ex.pack(side="left", padx=2); ex.insert(0, str(x))
+
+        ey = ctk.CTkEntry(f, width=80, font=("Consolas", 11), justify="center",
+                           fg_color=BG, border_color=BRD, text_color=TXT)
+        ey.pack(side="left", padx=2); ey.insert(0, str(y))
+
+        ed = ctk.CTkEntry(f, width=90, font=("Consolas", 11), justify="center",
+                           fg_color=BG, border_color=BRD, text_color=TXT)
+        ed.pack(side="left", padx=2); ed.insert(0, str(delay))
+
+        row_data = {"frame": f, "lbl": lbl, "ex": ex, "ey": ey, "ed": ed}
+
+        ctk.CTkButton(f, text="✕", width=28, height=26, font=("Segoe UI", 10),
+                       fg_color="transparent", hover_color="#3a1525", text_color=DIM,
+                       command=lambda r=row_data: self._del_row(r)
+                       ).pack(side="left", padx=2)
+
+        # Move up button
+        ctk.CTkButton(f, text="▲", width=24, height=26, font=("Segoe UI", 9),
+                       fg_color="transparent", hover_color=BRD, text_color=DIM,
+                       command=lambda r=row_data: self._move_up(r)
+                       ).pack(side="left", padx=1)
+
+        self.rows.append(row_data)
+        self._reindex()
+
+    def _del_row(self, row):
+        if row in self.rows:
+            self.rows.remove(row)
+            row["frame"].destroy()
+            self._reindex()
+
+    def _clear(self):
+        for r in self.rows:
+            r["frame"].destroy()
+        self.rows.clear()
+
+    def _move_up(self, row):
+        idx = self.rows.index(row)
+        if idx <= 0:
             return
-        self.is_playing = True
-        self._stop_flag.clear()
-        self.btn_play.configure(text="⏹ Dừng", fg_color=C_WARN, hover_color="#d97706")
-        self.lbl_info.configure(text="Đang phát...", text_color=C_WARN)
+        self.rows[idx], self.rows[idx - 1] = self.rows[idx - 1], self.rows[idx]
+        # Re-pack in new order
+        for r in self.rows:
+            r["frame"].pack_forget()
+        for r in self.rows:
+            r["frame"].pack(fill="x", pady=1)
+        self._reindex()
 
-        self._play_thread = threading.Thread(target=self._execute, daemon=True)
-        self._play_thread.start()
+    def _reindex(self):
+        for i, r in enumerate(self.rows):
+            r["lbl"].configure(text=str(i + 1))
 
-    def _stop_play(self):
-        self._stop_flag.set()
-        self.is_playing = False
-        self.btn_play.configure(text="▶ Phát", fg_color=C_PLAY, hover_color="#059669")
-        self.lbl_info.configure(text=f"{len(self.steps)} bước", text_color=C_TEXT_DIM)
+    def _get_steps(self):
+        result = []
+        for r in self.rows:
+            try: x = int(r["ex"].get())
+            except: x = 0
+            try: y = int(r["ey"].get())
+            except: y = 0
+            try: d = max(int(r["ed"].get()), 10)
+            except: d = DEFAULT_DELAY
+            result.append({"x": x, "y": y, "delay": d})
+        return result
 
-    def _execute(self):
-        """Runs in a background thread — uses pyautogui for OS-level clicks."""
-        total = len(self.steps)
-        for i, step in enumerate(self.steps):
-            if self._stop_flag.is_set():
-                break
+    def _save(self):
+        self.project["steps"] = self._get_steps()
+        if self.on_save:
+            self.on_save()
+        self.lbl_st.configure(text=f"💾 Đã lưu {len(self.rows)} bước", text_color=GREEN)
 
-            # Update counter on main thread
-            self.after(0, lambda c=i+1, t=total:
-                       self.lbl_info.configure(text=f"{c}/{t}", text_color=C_WARN))
+    # ─── Record ──────────────────────────────────────────
+    def _toggle_rec(self):
+        if self._listener:
+            self._stop_rec()
+        else:
+            self._start_rec()
 
-            # Click at absolute screen coordinates
-            pyautogui.click(x=step["x"], y=step["y"])
+    def _start_rec(self):
+        self.btn_rec.configure(text="⏹ Dừng", fg_color="#9f1239")
+        self.lbl_st.configure(text="🔴 Click vào bất kỳ đâu...", text_color=RED)
+        self.iconify()
 
-            # Custom exact delay
-            delay_sec = step.get("delay", DEFAULT_DELAY) / 1000.0
-            if self._stop_flag.wait(timeout=delay_sec):
-                break  # Stopped during delay
+        def on_click(x, y, btn, pressed):
+            if pressed and btn == pmouse.Button.left:
+                self.after(0, lambda: self._add_row(int(x), int(y), DEFAULT_DELAY))
+                self.after(100, self._stop_rec)
+                self.after(150, self.deiconify)
+                return False
 
-        # Done — update UI on main thread
-        self.after(0, self._stop_play)
+        self._listener = pmouse.Listener(on_click=on_click)
+        self._listener.start()
 
-    def _back_to_dashboard(self):
-        if self.is_playing:
-            self._stop_play()
-        self.dashboard.show_dashboard()
+    def _stop_rec(self):
+        if self._listener:
+            self._listener.stop()
+            self._listener = None
+        self.btn_rec.configure(text="🎯 Ghi", fg_color=RED)
+        self.lbl_st.configure(text="Sẵn sàng", text_color=DIM)
+
+    def _close(self):
+        self._stop_rec()
+        self.destroy()
 
 
 # ═══════════════════════════════════════════════════════════
-#  ENTRY POINT
+#  MAIN DASHBOARD — Project Manager
+# ═══════════════════════════════════════════════════════════
+class Dashboard(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title(f"⚡ Auto-Clicker Hub")
+        self.geometry("560x520")
+        self.minsize(480, 400)
+        self.configure(fg_color=BG)
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
+
+        self.projects: list[dict] = load_data()
+        self.fabs: dict[str, ProjectFAB] = {}
+        self.project_cards: list = []
+
+        self._build()
+        self._render_list()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _build(self):
+        # Header
+        hdr = ctk.CTkFrame(self, fg_color=SURF, corner_radius=0, height=50)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        ctk.CTkLabel(hdr, text="⚡ Auto-Clicker Hub",
+                     font=("Segoe UI", 17, "bold"), text_color=TXT
+                     ).pack(side="left", padx=16)
+        ctk.CTkLabel(hdr, text="Multi-Project", font=("Segoe UI", 10),
+                     text_color=DIM).pack(side="left", padx=4)
+
+        self.lbl_count = ctk.CTkLabel(hdr, text="", font=("Consolas", 11),
+                                       text_color=DIM)
+        self.lbl_count.pack(side="right", padx=16)
+
+        # Add project button
+        bar = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+        bar.pack(fill="x", padx=14, pady=(10, 6))
+
+        ctk.CTkButton(bar, text="＋ Tạo Project Mới", width=160, height=36,
+                       font=("Segoe UI", 13, "bold"),
+                       fg_color=ACC, hover_color=ACC2,
+                       command=self._add_project).pack(side="left")
+
+        ctk.CTkButton(bar, text="📂 Import JSON", width=120, height=36,
+                       font=("Segoe UI", 12), fg_color=SURF, hover_color=BRD,
+                       text_color=TXT, command=self._import_json).pack(side="right")
+
+        # Project list (scrollable)
+        self.sframe = ctk.CTkScrollableFrame(self, fg_color=BG2, corner_radius=8,
+                                              scrollbar_button_color=BRD)
+        self.sframe.pack(fill="both", expand=True, padx=14, pady=(0, 10))
+
+    # ─── Render project cards ─────────────────────────────
+    def _render_list(self):
+        for w in self.sframe.winfo_children():
+            w.destroy()
+        self.project_cards.clear()
+
+        if not self.projects:
+            ctk.CTkLabel(self.sframe, text="Chưa có project nào.\nNhấn ＋ để tạo mới.",
+                         font=("Segoe UI", 12), text_color=DIM
+                         ).pack(pady=40)
+            self._update_count()
+            return
+
+        for p in self.projects:
+            self._make_card(p)
+        self._update_count()
+
+    def _make_card(self, p: dict):
+        card = ctk.CTkFrame(self.sframe, fg_color=SURF, corner_radius=10,
+                            border_width=1, border_color=BRD, height=64)
+        card.pack(fill="x", padx=4, pady=3)
+        card.pack_propagate(False)
+
+        # Left: name + step count
+        left = ctk.CTkFrame(card, fg_color="transparent")
+        left.pack(side="left", fill="y", padx=(12, 4))
+
+        # Editable name
+        name_entry = ctk.CTkEntry(left, width=160, height=28, font=("Segoe UI", 12, "bold"),
+                                   fg_color="transparent", border_width=0, text_color=TXT)
+        name_entry.pack(anchor="w", pady=(8, 0))
+        name_entry.insert(0, p.get("name", "Untitled"))
+        name_entry.bind("<FocusOut>", lambda e, proj=p, ent=name_entry: self._rename(proj, ent))
+        name_entry.bind("<Return>", lambda e, proj=p, ent=name_entry: self._rename(proj, ent))
+
+        steps_n = len(p.get("steps", []))
+        ctk.CTkLabel(left, text=f"{steps_n} bước · ID: {p['id'][:6]}",
+                     font=("Consolas", 9), text_color=DIM).pack(anchor="w")
+
+        # Right: action buttons
+        right = ctk.CTkFrame(card, fg_color="transparent")
+        right.pack(side="right", padx=(4, 8))
+
+        pid = p["id"]
+        fab_active = pid in self.fabs and self.fabs[pid].winfo_exists()
+
+        ctk.CTkButton(right, text="📝", width=34, height=32, font=("Segoe UI", 13),
+                       fg_color=SURF2, hover_color=BRD, text_color=TXT,
+                       command=lambda proj=p: self._edit(proj)
+                       ).pack(side="left", padx=2)
+
+        fab_text = "🟢" if fab_active else "🚀"
+        fab_btn = ctk.CTkButton(right, text=fab_text, width=34, height=32,
+                                 font=("Segoe UI", 13),
+                                 fg_color=GREEN if fab_active else SURF2,
+                                 hover_color=GREEN2 if fab_active else BRD,
+                                 command=lambda proj=p: self._toggle_fab(proj))
+        fab_btn.pack(side="left", padx=2)
+
+        ctk.CTkButton(right, text="🗑", width=34, height=32, font=("Segoe UI", 13),
+                       fg_color=SURF2, hover_color="#3a1525", text_color=RED,
+                       command=lambda proj=p: self._delete(proj)
+                       ).pack(side="left", padx=2)
+
+        self.project_cards.append(card)
+
+    def _update_count(self):
+        n = len(self.projects)
+        active = sum(1 for pid, fab in self.fabs.items() if fab.winfo_exists())
+        self.lbl_count.configure(text=f"{n} projects · {active} FABs")
+
+    # ─── Actions ──────────────────────────────────────────
+    def _add_project(self):
+        p = {"id": new_id(), "name": f"Project {len(self.projects) + 1}",
+             "steps": [], "fab_x": 100, "fab_y": 100}
+        self.projects.append(p)
+        self._persist()
+        self._render_list()
+
+    def _rename(self, proj, entry):
+        new_name = entry.get().strip()
+        if new_name:
+            proj["name"] = new_name
+            self._persist()
+
+    def _edit(self, proj):
+        StepEditor(self, proj, on_save=lambda: (self._persist(), self._render_list()))
+
+    def _delete(self, proj):
+        if not messagebox.askyesno("Xác nhận", f"Xóa '{proj['name']}'?"):
+            return
+        pid = proj["id"]
+        if pid in self.fabs and self.fabs[pid].winfo_exists():
+            self.fabs[pid].close_fab()
+            del self.fabs[pid]
+        self.projects = [p for p in self.projects if p["id"] != pid]
+        self._persist()
+        self._render_list()
+
+    def _toggle_fab(self, proj):
+        pid = proj["id"]
+        if pid in self.fabs and self.fabs[pid].winfo_exists():
+            self.fabs[pid].close_fab()
+            del self.fabs[pid]
+        else:
+            if not proj.get("steps"):
+                messagebox.showinfo("Thông báo", "Project chưa có bước nào.\nHãy thêm bước trước.")
+                return
+            fab = ProjectFAB(self, proj, on_pos_changed=self._persist)
+            self.fabs[pid] = fab
+        self._render_list()
+
+    def _import_json(self):
+        from tkinter import filedialog
+        fp = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
+        if not fp:
+            return
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            messagebox.showerror("Lỗi", str(e))
+            return
+
+        # Support both formats: list of steps or list of projects
+        if isinstance(data, list) and data and "x" in data[0]:
+            p = {"id": new_id(), "name": os.path.basename(fp).replace(".json", ""),
+                 "steps": data, "fab_x": 100, "fab_y": 100}
+            self.projects.append(p)
+        elif isinstance(data, list) and data and "id" in data[0]:
+            self.projects.extend(data)
+        self._persist()
+        self._render_list()
+
+    # ─── Persistence ──────────────────────────────────────
+    def _persist(self):
+        save_data(self.projects)
+
+    def _on_close(self):
+        for fab in self.fabs.values():
+            if fab.winfo_exists():
+                fab.close_fab()
+        self._persist()
+        self.destroy()
+
+
 # ═══════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    app = MainDashboard()
+    app = Dashboard()
     app.mainloop()

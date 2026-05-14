@@ -1,12 +1,32 @@
+# ═══ Python ═══
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ═══ Data (tạo khi chạy app) ═══
+projects.json
+
+# ═══ OS ═══
+.DS_Store
+Thumbs.db
+*.log
+
+# ═══ IDE ═══
+.vscode/
+.idea/
+
+# ═══ Electron cũ (không dùng nữa) ═══
 node_modules/
 dist/
 out/
-.DS_Store
-*.log
-.vscode/
+package-lock.json
+package.json
+electron-builder.yml
+postcss.config.js
+tailwind.config.js
+tsconfig.json
+vite.config.mjs
+src/
 *.exe
-__pycache__/
-*.pyc
-.venv/
-venv/
-config.json

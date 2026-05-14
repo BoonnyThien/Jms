@@ -1,0 +1,40 @@
+name: Build EXE
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Find customtkinter path
+        id: ctk
+        run: |
+          $path = python -c "import customtkinter; import os; print(os.path.dirname(customtkinter.__file__))"
+          echo "CTK_PATH=$path" >> $env:GITHUB_OUTPUT
+
+      - name: Build EXE
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --name "AutoClickerHub" --add-data "${{ steps.ctk.outputs.CTK_PATH }};customtkinter/" main.py
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/AutoClickerHub.exe
+          generate_release_notes: true

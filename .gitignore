@@ -8,8 +8,9 @@ venv/
 # ═══ Data (tạo khi chạy) ═══
 projects.json
 
-# ═══ Build ═══
+# ═══ PyInstaller build ═══
 build/
+dist/
 *.spec
 
 # ═══ OS / IDE ═══
@@ -21,7 +22,6 @@ Thumbs.db
 
 # ═══ Electron cũ ═══
 node_modules/
-dist/
 out/
 package-lock.json
 package.json

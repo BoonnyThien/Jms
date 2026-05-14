@@ -46,7 +46,7 @@
                 : 'bg-rose-500/10 text-rose-400/80 hover:bg-rose-500/20 hover:text-rose-300'"
           >
             <span>{{ isRecording ? '⏹' : '🔴' }}</span>
-            <span>{{ isRecording ? 'Dừng' : 'Ghi' }}</span>
+            <span>{{ isRecording ? 'Dừng k' : 'Ghi' }}</span>
           </button>
 
           <!-- Play -->

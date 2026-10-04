@@ -138,7 +138,29 @@ class ProjectFAB(ctk.CTkToplevel):
         for s in self.project.get("steps", []):
             if self._stop.is_set():
                 break
-            pyautogui.click(x=s["x"], y=s["y"])
+            
+            action = s.get("action", "click")
+            if action == "click":
+                pyautogui.click(x=s.get("x", 0), y=s.get("y", 0))
+            elif action == "excel_wps":
+                try:
+                    import pygetwindow as gw
+                    windows = gw.getAllWindows()
+                    target = None
+                    for w in windows:
+                        t = w.title.lower()
+                        if "excel" in t or "wps" in t:
+                            target = w
+                            break
+                    if target:
+                        target.activate()
+                except Exception as e:
+                    print("Lỗi chuyển cửa sổ:", e)
+            elif action == "copy":
+                pyautogui.hotkey("ctrl", "c")
+            elif action == "paste":
+                pyautogui.hotkey("ctrl", "v")
+            
             if self._stop.wait(timeout=s.get("delay", DEFAULT_DELAY) / 1000.0):
                 break
         self.after(0, self._done)
@@ -211,7 +233,7 @@ class StepEditor(ctk.CTkToplevel):
         th = ctk.CTkFrame(self, fg_color=SURF2, corner_radius=4, height=28)
         th.pack(fill="x", padx=10, pady=(4, 0))
         th.pack_propagate(False)
-        for txt, w in [("#", 34), ("X", 80), ("Y", 80), ("Delay ms", 90), ("", 28)]:
+        for txt, w in [("#", 34), ("Action", 90), ("X", 60), ("Y", 60), ("Delay ms", 70), ("", 28)]:
             ctk.CTkLabel(th, text=txt, width=w, font=("Segoe UI", 9, "bold"),
                          text_color=DIM).pack(side="left", padx=2)
 
@@ -226,9 +248,9 @@ class StepEditor(ctk.CTkToplevel):
 
     def _load_steps(self):
         for s in self.project.get("steps", []):
-            self._add_row(s["x"], s["y"], s.get("delay", DEFAULT_DELAY))
+            self._add_row(s.get("x", 0), s.get("y", 0), s.get("delay", DEFAULT_DELAY), s.get("action", "click"))
 
-    def _add_row(self, x, y, delay):
+    def _add_row(self, x, y, delay, action="click"):
         idx = len(self.rows) + 1
         f = ctk.CTkFrame(self.sframe, fg_color="transparent", height=34)
         f.pack(fill="x", pady=1)
@@ -236,19 +258,26 @@ class StepEditor(ctk.CTkToplevel):
         lbl = ctk.CTkLabel(f, text=str(idx), width=34, font=("Consolas", 11), text_color=DIM)
         lbl.pack(side="left", padx=2)
 
-        ex = ctk.CTkEntry(f, width=80, font=("Consolas", 11), justify="center",
+        # Action Selector
+        actions = ["click", "excel_wps", "copy", "paste"]
+        cbo = ctk.CTkComboBox(f, values=actions, width=90, font=("Consolas", 11),
+                              fg_color=BG, border_color=BRD, dropdown_fg_color=BG, dropdown_text_color=TXT)
+        cbo.pack(side="left", padx=2)
+        cbo.set(action)
+
+        ex = ctk.CTkEntry(f, width=60, font=("Consolas", 11), justify="center",
                            fg_color=BG, border_color=BRD, text_color=TXT)
         ex.pack(side="left", padx=2); ex.insert(0, str(x))
 
-        ey = ctk.CTkEntry(f, width=80, font=("Consolas", 11), justify="center",
+        ey = ctk.CTkEntry(f, width=60, font=("Consolas", 11), justify="center",
                            fg_color=BG, border_color=BRD, text_color=TXT)
         ey.pack(side="left", padx=2); ey.insert(0, str(y))
 
-        ed = ctk.CTkEntry(f, width=90, font=("Consolas", 11), justify="center",
+        ed = ctk.CTkEntry(f, width=70, font=("Consolas", 11), justify="center",
                            fg_color=BG, border_color=BRD, text_color=TXT)
         ed.pack(side="left", padx=2); ed.insert(0, str(delay))
 
-        row_data = {"frame": f, "lbl": lbl, "ex": ex, "ey": ey, "ed": ed}
+        row_data = {"frame": f, "lbl": lbl, "cbo": cbo, "ex": ex, "ey": ey, "ed": ed}
 
         ctk.CTkButton(f, text="✕", width=28, height=26, font=("Segoe UI", 10),
                        fg_color="transparent", hover_color="#3a1525", text_color=DIM,
@@ -300,7 +329,8 @@ class StepEditor(ctk.CTkToplevel):
             except: y = 0
             try: d = max(int(r["ed"].get()), 10)
             except: d = DEFAULT_DELAY
-            result.append({"x": x, "y": y, "delay": d})
+            act = r["cbo"].get()
+            result.append({"action": act, "x": x, "y": y, "delay": d})
         return result
 
     def _save(self):
@@ -387,6 +417,10 @@ class Dashboard(ctk.CTk):
                        font=("Segoe UI", 13, "bold"),
                        fg_color=ACC, hover_color=ACC2,
                        command=self._add_project).pack(side="left")
+
+        ctk.CTkButton(bar, text="☁️ Đồng bộ Cloud", width=120, height=36,
+                       font=("Segoe UI", 12), fg_color="#0284c7", hover_color="#0369a1",
+                       text_color=TXT, command=self._sync_cloud).pack(side="right", padx=(4, 0))
 
         ctk.CTkButton(bar, text="📂 Import JSON", width=120, height=36,
                        font=("Segoe UI", 12), fg_color=SURF, hover_color=BRD,
@@ -530,6 +564,33 @@ class Dashboard(ctk.CTk):
             self.projects.extend(data)
         self._persist()
         self._render_list()
+
+    def _sync_cloud(self):
+        url = ctk.CTkInputDialog(text="Nhập URL Cloudflare JSON (ví dụ Worker/KV/R2):", title="Đồng bộ từ Cloud").get_input()
+        if not url:
+            return
+        
+        def _fetch():
+            try:
+                import urllib.request
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    data = json.loads(response.read().decode('utf-8'))
+                
+                self.after(0, self._on_sync_success, data)
+            except Exception as e:
+                self.after(0, lambda err=e: messagebox.showerror("Lỗi Đồng bộ", f"Không thể tải dữ liệu:\n{err}"))
+                
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _on_sync_success(self, data):
+        if isinstance(data, list):
+            self.projects = data
+            self._persist()
+            self._render_list()
+            messagebox.showinfo("Thành công", "Đã tải và lưu thiết kế từ Cloudflare về máy!")
+        else:
+            messagebox.showerror("Lỗi", "Định dạng JSON không hợp lệ (phải là danh sách các dự án).")
 
     # ─── Persistence ──────────────────────────────────────
     def _persist(self):
